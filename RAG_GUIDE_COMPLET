@@ -1,0 +1,364 @@
+ SOC RAG ELITE
+Guide de Maîtrise & Enseignement
+Architecture, Mise à Jour, Utilisation Quotidienne
+sangour3i
+Cybersecurity — Threat Intelligence & DFIR
+Mai 2026
+ 
+1. C'est quoi ce système ?
+Avant de lire la moindre commande, voici la question essentielle : qu'est-ce que tu as construit ?
+
+En une phrase : tu as un moteur de recherche intelligent sur mesure, nourri exclusivement de sources cyber officielles, qui tourne 100% en local sur ta machine, sans envoyer aucune donnée sur internet.
+
+La différence avec ChatGPT ou Gemini est fondamentale :
+
+ChatGPT / Gemini	Ton SOC RAG ELITE
+Entraîné sur du contenu générique d'internet	Nourri de MITRE, Sigma, CISA, ANSSI...
+Connaissance figée à une date de coupure	Mis à jour par toi, quand tu veux
+Tes questions partent sur les serveurs d'OpenAI	Tout reste sur ta machine, 100% local
+Ne connaît pas tes playbooks personnels	Tes notes et playbooks sont dans la base
+Réponse générique sans source citée	Réponse avec fichier source cité
+Payant au-delà d'un certain usage	Gratuit, zéro abonnement
+
+
+1.1 Le concept RAG expliqué simplement
+RAG signifie Retrieval-Augmented Generation — en français : génération augmentée par la récupération. C'est un pipeline en 3 étapes :
+
+1.	Tu poses une question en langage naturel (ex: comment détecter un Pass-the-Hash ?)
+2.	Le système cherche dans sa base les 8 passages les plus pertinents (MITRE, Sigma, playbooks...)
+3.	Le LLM (Mistral ou Qwen) reçoit ces passages + ta question et génère une réponse sourcée
+
+Sans le RAG, le LLM répondrait de mémoire générale. Avec le RAG, il répond en s'appuyant sur TES sources cyber.
+
+ 
+2. Architecture complète du système
+2.1 Vue d'ensemble
+
+PIPELINE COMPLET — DE LA QUESTION À LA RÉPONSE
+ÉTAPE 1  →  Tu poses une question (terminal ou menu interactif)
+ÉTAPE 2  →  nomic-embed-text convertit ta question en vecteur mathématique
+ÉTAPE 3  →  ChromaDB compare ce vecteur aux ~400 000 chunks indexés
+ÉTAPE 4  →  Les 8 chunks les plus proches sémantiquement sont récupérés
+ÉTAPE 5  →  Le LLM (Mistral/Qwen2.5) reçoit ces chunks + ta question
+ÉTAPE 6  →  Réponse générée avec sources et fichiers cités
+
+
+2.2 Les composants techniques
+Composant	Rôle	Technologie
+Moteur d'embedding	Convertit les textes en vecteurs	nomic-embed-text via Ollama
+Base vectorielle	Stocke et recherche les 400K chunks	ChromaDB (soc-chroma-db-v2, 4.4 Go)
+LLM principal	Génère les réponses	Mistral 7B ou Qwen2.5:7b via Ollama
+Fetcher de sources	Télécharge et met à jour les données	soc_feed.py (Python)
+Interface de requête	Pose les questions au RAG	soc_ask_v2.py (Python)
+Menu SOC temps réel	Surveillance logs, réseau, processus	soc.sh (Bash)
+Sources brutes	Données indexées (textes, YAML, MD)	~/soc-brain/ (~25 dossiers)
+
+
+2.3 Les modèles Ollama disponibles
+Modèle	Taille	Usage recommandé
+mistral:7b	4.4 Go	LLM par défaut — bon équilibre vitesse/qualité
+qwen2.5:7b	4.7 Go	Alternatif — fort en analyse technique
+deepseek-r1:7b	4.7 Go	Raisonnement complexe, analyses longues
+nomic-embed-text	274 Mo	Embeddings UNIQUEMENT — ne pas changer
+mistral:latest	4.1 Go	Version stable de Mistral
+aion / shadowmentor	4.1 Go	Modèles personnalisés (usage spécifique)
+
+Important : ne jamais changer nomic-embed-text sans re-indexer les 400 000 chunks — les vecteurs sont incompatibles entre modèles d'embedding.
+ 
+3. Les sources indexées (soc-brain)
+Le dossier ~/soc-brain/ contient toutes les données qui alimentent le RAG. Voici ce que chaque source apporte :
+
+Dossier	Source	Contenu	Criticité
+mitre_attack	MITRE ATT&CK	709 techniques complètes (tactiques, procédures)	Critique
+sigma_rules	SigmaHQ	3000+ règles de détection (YAML)	Critique
+cisa_kev	CISA KEV	1602 vulnérabilités activement exploitées	Critique
+atomic_red_team	Atomic Red Team	200 tests d'attaque mappés MITRE	Haute
+nvd_cve	NVD / NIST	1225 CVE critiques (90 derniers jours)	Haute
+hayabusa_rules	Hayabusa	193 règles threat hunting Windows (YAML)	Haute
+anssi	ANSSI France	120 alertes, avis et bulletins officiels	Haute
+mitre_car	MITRE CAR	Analytics de détection officiels	Normale
+mordor	Mordor Datasets	Logs d'attaques réelles simulées	Normale
+threat_blogs	RSS Threat Intel	155 articles (Talos, Unit42, DFIR Report...)	Normale
+abuse_ch	Abuse.ch	IOC : C2, URLs malveillantes, certificats	Haute
+books-cyber	Livres techniques	DFIR, Threat Hunting, Linux avancé	Support
+playbooks	Notes personnelles	Tes playbooks, scénarios, procédures	Critique
+dfir / linux / reseau	Références	Commandes, techniques, hardening	Support
+
+
+3.1 Sources avec mise à jour automatique
+Source	Fréquence max	Méthode
+CISA KEV	7 jours	API JSON officielle CISA
+NVD CVE	7 jours	API NVD — CVE critiques 90 jours
+RSS Blogs	1 jour	Flux RSS (Talos, Bleeping, DFIR Report...)
+Abuse.ch	1 jour	CSV/API Abuse.ch, ThreatFox, URLhaus
+Sigma Rules	14 jours	Téléchargement SigmaHQ
+MITRE ATT&CK	30 jours	Bundle STIX officiel
+Atomic Red Team	Variable	GitHub Microsoft
+Hayabusa	Variable	GitHub Yamato Security
+ANSSI	Variable	Flux RSS ANSSI
+Playbooks	999 jours	Manuel — tes propres fichiers
+ 
+4. Mise à jour du système
+4.1 Vérifier l'état actuel
+Avant toute chose, vérifier quelles sources sont périmées :
+
+cd ~/python/soc
+python3.13 soc_feed.py --status
+
+Résultat attendu :
+mitre      0h      30j    ✅ FRAIS
+cisa       0h       7j    ✅ FRAIS
+nvd        0h       7j    ✅ FRAIS
+rss        0h       1j    ✅ FRAIS
+sigma      0h      14j    ✅ FRAIS
+abuse      0h       1j    ✅ FRAIS
+
+4.2 Mettre à jour toutes les sources
+Lance la mise à jour complète (le script détecte automatiquement ce qui est périmé) :
+
+cd ~/python/soc
+python3.13 soc_feed.py 2>&1 | tee soc_logs/update_$(date +%Y%m%d).log
+
+Dans un second terminal, surveiller en temps réel :
+tail -f ~/python/soc/soc-brain/_feed_log.txt
+
+4.3 Forcer la mise à jour d'une source spécifique
+Si une source précise est périmée ou a eu des erreurs :
+
+python3.13 soc_feed.py --force cisa
+python3.13 soc_feed.py --force mitre
+python3.13 soc_feed.py --force sigma
+python3.13 soc_feed.py --force abuse
+python3.13 soc_feed.py --force atomic
+python3.13 soc_feed.py --force hayabusa
+python3.13 soc_feed.py --force anssi
+
+4.4 Rebuild de la base vectorielle
+Après chaque mise à jour des sources, il faut re-vectoriser pour que le RAG prenne en compte les nouvelles données :
+
+cd ~/python/soc
+python3.13 soc_ask_v2.py --rebuild
+
+ATTENTION — ORDRE OBLIGATOIRE
+1. D'abord : python3.13 soc_feed.py      (téléchargement des données)
+2. Ensuite : python3.13 soc_ask_v2.py --rebuild   (re-vectorisation)
+
+Ne jamais inverser l'ordre. Le rebuild sans nouveau feed n'apporte rien.
+Le rebuild dure entre 10 et 30 minutes selon le volume.
+
+
+4.5 Automatisation avec cron
+Pour ne plus avoir à y penser, automatiser avec cron :
+
+crontab -e
+
+# Mise à jour sources — chaque lundi à 7h
+0 7 * * 1 cd ~/python/soc && python3.13 soc_feed.py >> soc-brain/_feed_log.txt 2>&1
+
+# Rebuild RAG — chaque lundi à 9h (après le feed)
+0 9 * * 1 cd ~/python/soc && python3.13 soc_ask_v2.py --rebuild >> soc_logs/rebuild.log 2>&1
+
+ 
+5. Utilisation quotidienne
+5.1 Lancer le RAG — mode interactif
+La façon la plus simple : lancer sans argument et suivre le menu :
+
+cd ~/python/soc
+python3.13 soc_ask_v2.py
+
+5.2 Les modes disponibles
+Le système a 6 modes spécialisés, chacun avec un prompt système différent :
+
+Mode	Commande	Cas d'usage
+blue	--mode blue	Défense, détection, réponse à incident, hardening
+red	--mode red	Techniques offensives, pivoting, persistence
+hunt	--mode hunt	Threat hunting, recherche d'indicateurs dans les logs
+extract	--mode extract	Extraire des règles Sigma, IOC, TTPs précis
+synthesis	--mode synthesis	Synthèse multi-sources sur un sujet
+checklist	--mode checklist	Générer une checklist d'investigation
+
+
+5.3 Exemples de questions par mode
+
+Mode Blue — Défense
+python3.13 soc_ask_v2.py --mode blue --question "comment détecter un Pass-the-Hash ?"
+python3.13 soc_ask_v2.py --mode blue --question "quelles règles Sigma pour détecter Mimikatz ?"
+python3.13 soc_ask_v2.py --mode blue --question "CVE-2024-1234 est-elle dans le KEV CISA ?"
+
+Mode Red — Offensif
+python3.13 soc_ask_v2.py --mode red --question "techniques de pivoting Windows"
+python3.13 soc_ask_v2.py --mode red --question "méthodes de persistence MITRE T1547"
+
+Mode Hunt — Threat Hunting
+python3.13 soc_ask_v2.py --mode hunt --question "comment chasser Cobalt Strike dans les logs Windows"
+python3.13 soc_ask_v2.py --mode hunt --question "IOC Lazarus Group 2024"
+
+Mode Extract — Extraction précise
+python3.13 soc_ask_v2.py --mode extract --question "règles Sigma pour Kerberoasting"
+python3.13 soc_ask_v2.py --mode extract --question "liste des techniques MITRE pour lateral movement"
+
+5.4 Filtres avancés
+Affiner la recherche par thème ou source précise :
+
+# Chercher uniquement dans les sources MITRE
+python3.13 soc_ask_v2.py --theme mitre --question "T1055 Process Injection"
+
+# Chercher uniquement dans les règles Sigma
+python3.13 soc_ask_v2.py --theme sigma --question "détection PowerShell obfusqué"
+
+# Augmenter le nombre de chunks récupérés
+python3.13 soc_ask_v2.py --topk 15 --question "ransomware techniques"
+
+Thème (--theme)	Sources correspondantes
+mitre	MITRE ATT&CK — techniques et tactiques
+sigma	SigmaHQ — règles de détection
+cisa	CISA KEV — vulnérabilités exploitées
+nvd	NVD — CVE critiques
+blog	Flux RSS — articles threat intel
+abuse	Abuse.ch — IOC et indicateurs
+dfir	Ressources DFIR et forensics
+playbook	Tes playbooks personnels
+
+
+5.5 Le menu SOC temps réel (soc.sh)
+En parallèle du RAG, tu as un menu de surveillance en temps réel de ta machine :
+
+cd ~/python/soc && bash soc.sh
+
+Option	Action
+1	Surveillance logs en temps réel (tail sur /var/soc/logs/)
+2	Détection brute-force SSH (IPs qui échouent en masse)
+3	Détection reconnaissance réseau (Nmap, masscan...)
+4	Processus suspects (netcat, meterpreter, reverse shells...)
+5	Connexions réseau actives (LISTEN + ESTABLISHED)
+6	Analyse complète — tout en une passe
+ 
+6. Maintenance et surveillance
+6.1 Vérifications rapides
+
+# Ollama fonctionne ?
+ollama list
+
+# Taille de la base vectorielle
+du -sh ~/python/soc/soc-chroma-db-v2/
+
+# Espace disque disponible
+df -h ~
+
+# Derniers événements du feed
+tail -20 ~/python/soc/soc-brain/_feed_log.txt
+
+# Compter les succès vs erreurs du dernier feed
+grep -c '✅' ~/python/soc/soc-brain/_feed_log.txt
+grep -c '❌' ~/python/soc/soc-brain/_feed_log.txt
+
+6.2 Points d'attention permanents
+
+Problème	Symptôme	Solution
+Sigma = 0 règles	Le feed retourne '0 règles sélectionnées'	Inspecter le filtre dans soc_feed.py ligne ~482
+TIL 404	Repo GitHub supprimé	Supprimer cette source du script ou trouver alternative
+ConnectionResetError	Erreurs réseau pendant le feed	Relancer avec --force sur la source concernée
+Python 3.14 vs 3.13	Import errors chromadb/pydantic	Toujours utiliser python3.13 soc_ask_v2.py
+Embedding drift	Réponses moins pertinentes après changement modèle	Re-indexer avec --rebuild obligatoire
+Disque plein	Rebuild échoue à mi-chemin	Surveiller df -h, la base fait 4.4 Go
+
+
+6.3 Checklist hebdomadaire (5 minutes)
+
+•	Lancer python3.13 soc_feed.py --status
+•	Si source périmée : python3.13 soc_feed.py
+•	Si nouvelles données : python3.13 soc_ask_v2.py --rebuild
+•	Vérifier tail -5 soc-brain/_feed_log.txt (pas d'erreurs critiques)
+•	Vérifier df -h (espace disque)
+ 
+7. Enseigner ce système
+7.1 Progression pédagogique recommandée
+Pour former quelqu'un à partir de zéro, voici l'ordre logique :
+
+MODULE 1 — Comprendre avant de toucher (1h)
+Objectif : savoir expliquer ce que fait le système sans ouvrir un terminal
+
+1. Expliquer la différence LLM générique vs RAG spécialisé
+2. Dessiner le pipeline : Question → Embedding → ChromaDB → LLM → Réponse
+3. Montrer les sources (soc-brain/) et expliquer pourquoi chacune est là
+4. Montrer que les réponses citent leurs sources (crédibilité)
+
+MODULE 2 — Utilisation basique (2h)
+Objectif : poser une question et lire une réponse
+
+1. cd ~/python/soc && python3.13 soc_ask_v2.py
+2. Poser 3 questions en mode blue (détection)
+3. Poser 3 questions en mode red (attaque)
+4. Observer les sources citées dans les réponses
+5. Comprendre --topk : plus de chunks = réponse plus riche mais plus lente
+
+MODULE 3 — Maintenance (1h)
+Objectif : maintenir le système à jour de manière autonome
+
+1. python3.13 soc_feed.py --status (lecture du tableau)
+2. python3.13 soc_feed.py (lancer un feed complet)
+3. Lire le _feed_log.txt et identifier erreurs vs succès
+4. python3.13 soc_ask_v2.py --rebuild (comprendre pourquoi c'est nécessaire)
+5. Configurer le cron pour automatiser
+
+MODULE 4 — Personnalisation (2h)
+Objectif : enrichir le RAG avec ses propres données
+
+1. Ajouter un fichier .txt ou .md dans ~/soc-brain/playbooks/
+2. Relancer le rebuild et vérifier que la nouvelle info est disponible
+3. Comprendre le FOLDER_THEME_MAP dans soc_ask_v2.py
+4. Ajouter un nouveau thème personnalisé
+5. Exercice : indexer un rapport d'incident récent et l'interroger
+
+
+7.2 Questions types pour évaluer la compréhension
+
+•	Pourquoi doit-on toujours utiliser python3.13 et non python3 ?
+•	Que se passe-t-il si on change le modèle d'embedding sans rebuilder ?
+•	Quelle est la différence entre soc_feed.py et soc_ask_v2.py ?
+•	Pourquoi le RAG cite des sources alors que ChatGPT ne le fait pas ?
+•	Que fait --topk 15 ? Quand est-ce utile ?
+•	Pourquoi les Sigma Rules affichaient 0 règles lors du dernier feed ?
+•	Quel mode utiliser pour détecter un mouvement latéral dans des logs ?
+
+7.3 Analogie pédagogique
+Pour expliquer le RAG à un non-technicien :
+
+L'ANALOGIE DU DÉTECTIVE ET DE SA BIBLIOTHÈQUE
+Imagine un détective qui a une bibliothèque entière de dossiers criminels classifiés.
+
+Quand tu lui poses une question sur une technique d'attaque, il ne répond pas de mémoire.
+Il va D'ABORD chercher dans sa bibliothèque les dossiers les plus pertinents,
+puis il les lit et te donne une réponse basée sur ces dossiers — en les citant.
+
+La bibliothèque = ChromaDB (400 000 chunks)
+Le détective = Mistral/Qwen2.5
+L'index de la bibliothèque = les vecteurs nomic-embed-text
+Les nouvelles acquisitions = le soc_feed.py hebdomadaire
+
+ 
+8. Référence rapide — Toutes les commandes
+Mise à jour
+python3.13 soc_feed.py --status                      # état des sources
+python3.13 soc_feed.py                               # mise à jour complète
+python3.13 soc_feed.py --force cisa                  # forcer une source
+python3.13 soc_ask_v2.py --rebuild                   # re-vectoriser
+
+Requêtes RAG
+python3.13 soc_ask_v2.py                             # menu interactif
+python3.13 soc_ask_v2.py --mode blue --question "..."
+python3.13 soc_ask_v2.py --mode red  --question "..."
+python3.13 soc_ask_v2.py --mode hunt --question "..."
+python3.13 soc_ask_v2.py --mode extract --question "..."
+python3.13 soc_ask_v2.py --theme sigma --question "..."
+python3.13 soc_ask_v2.py --topk 15 --question "..."
+
+Monitoring
+ollama list                                           # modèles disponibles
+tail -f ~/python/soc/soc-brain/_feed_log.txt         # feed en temps réel
+du -sh ~/python/soc/soc-chroma-db-v2/               # taille de la base
+df -h ~                                              # espace disque
+bash ~/python/soc/soc.sh                            # menu SOC temps réel
+
+
+SOC RAG ELITE — Construit avec rigueur, maintenu avec discipline.
