@@ -456,6 +456,21 @@ def hyde_query(question: str, ollama_url: str = "http://localhost:11434",
 
 
 # ── QUERY ROUTER ──────────────────────────────────────────────────────────
+# topk_boost plafonné à 6 (pas 15-20) : mesuré en pratique sur "Comment
+# détecter un dump de LSASS..." (mode blue, agent DETECTION) — avec 15
+# chunks dans le contexte, mistral abandonnait le format tableau demandé
+# ET répondait en anglais malgré la consigne "réponds en français", pour
+# se rabattre sur une liste "Document 1 is..., Document 2 is..." — un
+# pattern de complétion plus facile pour un modèle 7B mais qui ignore les
+# instructions. Même question, mêmes documents :
+#   - 6 chunks  : table correcte, français correct, citations correctes,
+#                 requêtes KQL générées — testé et reproduit propre.
+#   - 8 chunks  : casse déjà (anglais, liste au lieu du tableau) — testé.
+#   - 10 chunks : casse aussi.
+# Le seuil de rupture est donc quelque part entre 6 et 8, pas à 8 comme
+# supposé au premier essai (8 = le topk par défaut du système, une
+# coïncidence commode mais insuffisante en pratique) — 6 est la valeur
+# la plus haute testée qui reste fiable, pas une estimation.
 AGENT_PATTERNS = {
     "CVE": {
         "patterns": [
@@ -467,7 +482,7 @@ AGENT_PATTERNS = {
             r"critiques.*90 jours|derniers jours"
         ],
         "themes": ["cisa", "nvd"],
-        "topk_boost": 15,
+        "topk_boost": 6,
         "mode_default": "blue"
     },
     "DETECTION": {
@@ -480,7 +495,7 @@ AGENT_PATTERNS = {
             r"détecter|comment.*identifier"
         ],
         "themes": ["sigma", "hayabusa"],
-        "topk_boost": 15,
+        "topk_boost": 6,
         "mode_default": "extract"
     },
     "DFIR": {
@@ -494,7 +509,7 @@ AGENT_PATTERNS = {
             r"ransomware|rançongiciel|chiffrement.*impact",
             r"T1486|T1490|T1489|T1562"        ],
         "themes": ["mitre", "atomic", "dfir", "playbook"],
-        "topk_boost": 20,
+        "topk_boost": 6,
         "mode_default": "blue"
     },
     "THREAT_HUNT": {
@@ -511,7 +526,7 @@ AGENT_PATTERNS = {
         # sans ce thème, l'agent THREAT_HUNT ne pouvait structurellement
         # jamais trouver ce contenu, quel que soit le retrieval.
         "themes": ["mitre", "blog", "abuse", "anssi", "dfir"],
-        "topk_boost": 20,
+        "topk_boost": 6,
         "mode_default": "hunt"
     }
 }

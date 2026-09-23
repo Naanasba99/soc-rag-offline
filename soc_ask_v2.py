@@ -640,7 +640,15 @@ def retrieval(question: str, mode: str, theme: str = None, topk: int = 8,
         agent_config = route_query(question)
         if agent_config:
             print(f"  🤖 Agent détecté : {agent_config['agent_name']}")
-            topk = max(topk, agent_config.get("topk_boost", topk))
+            # BUG CORRIGÉ : max(topk, topk_boost) ne peut jamais FAIRE
+            # BAISSER topk, seulement l'augmenter — donc calibrer
+            # topk_boost à 6 (voir la note sur AGENT_PATTERNS dans
+            # soc_reranker.py) n'avait aucun effet tant que le topk par
+            # défaut (8) restait plus grand : max(8, 6) = 8. La valeur de
+            # l'agent est censée être la valeur calibrée et testée pour ce
+            # couple agent+mode ; elle doit s'appliquer telle quelle, pas
+            # seulement servir de plancher.
+            topk = agent_config.get("topk_boost", topk)
     if HYDE_ENABLED and not theme:
         hyde_text = hyde_query(question, model=LLM_MODEL)
         query_embedding = embeddings.embed_query(hyde_text)
