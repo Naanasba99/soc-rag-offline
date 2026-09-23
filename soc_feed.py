@@ -479,6 +479,10 @@ RÉSUMÉ  : {summary}
 
 # ===================== SIGMA RULES =====================
 
+# ===================== SIGMA RULES — FONCTION CORRIGÉE =====================
+# REMPLACE fetch_sigma() dans soc_feed.py (lignes 482-548)
+# BUG CORRIGÉ : filtre "hayabusa/" retiré — il bloquait 100% des règles SigmaHQ
+
 def fetch_sigma(force=False):
     if not force and is_fresh("sigma"):
         log(f"⏭️  Sigma Rules — frais ({format_age(file_age_days(FRESHNESS_FILES['sigma']))}), skip.")
@@ -500,34 +504,33 @@ def fetch_sigma(force=False):
         log(f"❌ Sigma JSON parse error : {e}")
         return
 
-# Priorité : linux et windows en premier, puis le reste
-    priority_cats = ["linux", "windows"]
-    other_cats    = ["network", "web"]
+    # Priorité : windows et linux — les plus utiles pour un SOC
+    priority_cats = ["windows", "linux"]
+    other_cats    = ["network", "web", "cloud"]
 
+    # CORRECTION : suppression du filtre "hayabusa/" qui bloquait tout
+    # SigmaHQ/sigma n'a pas de dossier hayabusa/ — ce filtre donnait 0 résultats
     priority_rules = [
         item for item in tree
         if item["path"].endswith(".yml")
-        and "hayabusa/" in item["path"]
-        and any(cat in item["path"] for cat in priority_cats)
+        and any(f"/{cat}/" in item["path"] for cat in priority_cats)
     ][:400]
 
     other_rules = [
         item for item in tree
         if item["path"].endswith(".yml")
-        and "hayabusa/" in item["path"]
-        and any(cat in item["path"] for cat in other_cats)
+        and any(f"/{cat}/" in item["path"] for cat in other_cats)
         and item not in priority_rules
     ][:100]
 
-    rule_files = priority_rules + other_rules
-    
-    rule_files = priority_rules + other_rules  # 500 total, linux/windows prioritaires
-    log(f"  📋 {len(rule_files)} règles sélectionnées...")
+    rule_files = priority_rules + other_rules  # max 500 règles
+    log(f"  📋 {len(rule_files)} règles sélectionnées (windows/linux + network/web/cloud)...")
 
     lines = [
-        "SIGMA DETECTION RULES",
-        "Source : SigmaHQ/sigma (GitHub)",
+        "SIGMA DETECTION RULES — SigmaHQ",
+        "Source : https://github.com/SigmaHQ/sigma",
         f"Généré le : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"Règles sélectionnées : {len(rule_files)}",
         "=" * 60 + "\n"
     ]
 
@@ -535,18 +538,17 @@ def fetch_sigma(force=False):
     for item in rule_files:
         r2 = http_get_with_retry(
             f"https://raw.githubusercontent.com/SigmaHQ/sigma/master/{item['path']}",
-            retries=3, wait=5
-        )        
-        if r2:
+            retries=2, wait=3
+        )
+        if r2 and r2.status_code == 200:
             lines.append(f"--- FICHIER : {item['path']} ---\n{r2.text}\n")
             count += 1
-        time.sleep(0.8)
+        time.sleep(0.5)  # légèrement réduit pour accélérer
 
     with open(PATHS["sigma"] / "sigma_rules_soc.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
-    log(f"✅ Sigma — {count} règles enregistrées")
-
+    log(f"✅ Sigma — {count} règles enregistrées dans sigma_rules_soc.txt")
 
 # ===================== ABUSE.CH (sources sans auth) =====================
 
