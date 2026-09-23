@@ -35,6 +35,16 @@ LLM_TEMPERATURE = float(os.getenv("SOC_LLM_TEMPERATURE", "0.1"))
 LLM_NUM_PREDICT   = int(os.getenv("SOC_LLM_NUM_PREDICT", "1024"))
 LLM_TIMEOUT_S     = int(os.getenv("SOC_LLM_TIMEOUT_S", "120"))
 
+# Bug observé et reproduit : sur une réponse au format tableau strict (mode
+# blue/extract), mistral générait l'en-tête markdown puis restait bloqué à
+# produire des centaines d'espaces sans jamais écrire les lignes de données
+# — réponse de 566 caractères, presque entièrement des espaces, jamais de
+# contenu réel. Le repeat_penalty par défaut d'Ollama (~1.1) ne suffisait
+# pas à sortir de cette boucle de répétition dégénérée. Testé et confirmé :
+# repeat_penalty=1.3 sur le même prompt produit un tableau complet et
+# correctement formé du premier coup.
+LLM_REPEAT_PENALTY = float(os.getenv("SOC_LLM_REPEAT_PENALTY", "1.3"))
+
 def get_llm():
     if LLM_PROVIDER == "claude":
         api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -57,10 +67,12 @@ def get_llm():
         # sans modifier le code — utilisé par eval_rag.py pour comparer.
         model_name = os.getenv("SOC_LLM_MODEL", LLM_MODEL_LOCAL)
         print(f"🤖 LLM : Ollama local ({model_name}, temperature={LLM_TEMPERATURE}, "
-              f"num_predict={LLM_NUM_PREDICT}, timeout={LLM_TIMEOUT_S}s)")
+              f"num_predict={LLM_NUM_PREDICT}, repeat_penalty={LLM_REPEAT_PENALTY}, "
+              f"timeout={LLM_TIMEOUT_S}s)")
         return OllamaLLM(
             model=model_name,
             temperature=LLM_TEMPERATURE,
             num_predict=LLM_NUM_PREDICT,
+            repeat_penalty=LLM_REPEAT_PENALTY,
             client_kwargs={"timeout": LLM_TIMEOUT_S},
         )
