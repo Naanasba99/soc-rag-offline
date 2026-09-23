@@ -266,6 +266,146 @@ def translate_query_en(question: str, ollama_url: str = "http://localhost:11434"
     return question
 
 
+# ── DISTILLATION DE REQUÊTE (pour l'embedding vectoriel) ───────────────────
+# Cas confirmé en pratique : une question réaliste d'analyste SOC — longue,
+# multi-parties, avec du contexte narratif et des instructions de format
+# ("distingue les faits des hypothèses", "cite uniquement les sources...")
+# — s'embedde en un vecteur "moyenné" sur des dizaines de directions
+# sémantiques différentes, ce qui noie le signal technique réellement
+# discriminant. Mesuré : sur "Sur un poste Windows, j'observe powershell.exe
+# lancé par winword.exe..." (question complète, ~500 caractères), AUCUN des
+# 10 voisins vectoriels les plus proches n'est pertinent (dist 0.66-0.71,
+# tous hors-sujet). La même question réduite à ses faits techniques
+# ("powershell.exe lancé par winword.exe, activité malveillante ?") retrouve
+# immédiatement T1059.001_PowerShell.txt en position 1 (dist 0.641). C'est
+# le cas d'usage PRINCIPAL d'un assistant SOC (les analystes décrivent des
+# scénarios, pas des mots-clés isolés), pas un cas limite.
+#
+# Principe : distiller la question en une requête courte et dense en entités
+# techniques (noms de processus, outils, comportements observés) UNIQUEMENT
+# pour l'étape d'embedding vectoriel — la question complète reste utilisée
+# telle quelle pour le prompt final envoyé au LLM (qui doit répondre à
+# TOUTES les parties de la vraie question), et pour le reranker cross-encoder
+# (qui juge bien mieux avec le contexte complet — le problème est spécifique
+# au premier étage, l'embedding, pas au jugement de pertinence en aval).
+_distillation_cache = {}
+
+# Seuil arbitraire mais justifié : en dessous, une question est déjà courte
+# et dense (ex: "Explique T1059", "Qu'est-ce que Pass-the-Hash ?") — la
+# distiller n'apporterait rien et ajouterait un appel LLM inutile sur la
+# majorité des requêtes courtes, qui n'ont pas ce problème.
+DISTILLATION_MIN_LENGTH = 120
+
+
+def distill_retrieval_query(question: str, ollama_url: str = "http://localhost:11434",
+                             model: str = "mistral") -> str:
+    """
+    NON UTILISÉE PAR retrieval() ACTUELLEMENT — conservée pour référence.
+    L'hypothèse de départ (une question longue noie le signal, il faut la
+    raccourcir) s'est révélée incomplète : la comparaison A/B a montré que
+    c'est la LANGUE qui domine, pas la longueur (question EN complète,
+    traduite mot pour mot : dist 0.471 ; distillation FR/EN : dist
+    0.51-0.59 et instable run-to-run même à température 0). retrieval()
+    utilise donc translate_query_en (traduction, tâche contrainte et fiable)
+    pour l'embedding, pas cette fonction (résumé, tâche ouverte sujette à
+    dérive du modèle). Gardée au cas où un besoin de distillation pure
+    (indépendant de la langue) se représenterait, mais pas comme mécanisme
+    de premier recours.
+
+    Réduit une question longue/narrative à ses entités techniques
+    essentielles, pour l'utiliser comme requête d'embedding à la place de
+    la question complète (voir note ci-dessus). Retourne la question
+    originale si elle est déjà courte, ou si la distillation échoue.
+    """
+    if len(question) < DISTILLATION_MIN_LENGTH:
+        return question
+    if question in _distillation_cache:
+        return _distillation_cache[question]
+
+    import urllib.request
+    import json
+
+    # Mesuré A/B sur le même cas réel (powershell.exe lancé par winword.exe) :
+    # une phrase naturelle anglaise embarque nettement mieux avec
+    # nomic-embed-text qu'une liste de mots-clés séparés par virgules —
+    # meilleure distance 0.471 (et trouve la bonne règle Sigma) contre 0.524
+    # pour la liste de mots-clés. nomic-embed-text est visiblement optimisé
+    # pour du langage naturel, pas pour des sacs de mots. La traduction en
+    # anglais est volontaire (comme pour le reranker cross-lingue) : le
+    # corpus est majoritairement anglais (MITRE/Sigma/CISA/Atomic).
+    # L'exemple concret ci-dessous cadre le style attendu (une phrase
+    # factuelle et dense, pas une liste), et le troncage en Python après
+    # coup borne la longueur même si le modèle déborde quand même.
+    prompt = (
+        "Rewrite this SOC analyst question as ONE short, natural English "
+        "sentence stating only the technical facts observed (process/file "
+        "names, IPs, protocols, actions). No interpretation, no added "
+        "facts, no meta-instructions about answer format or sourcing.\n\n"
+        "Example:\n"
+        "Question: Sur un serveur Linux j'observe une connexion SSH depuis "
+        "une IP inconnue suivie de la création d'un cron job suspect, "
+        "quelles hypothèses envisager et quelles traces examiner ?\n"
+        "Sentence: SSH connection from an unknown IP followed by creation "
+        "of a suspicious cron job on a Linux server.\n\n"
+        f"Question: {question}\n"
+        "Sentence:"
+    )
+    payload = json.dumps({
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        # stop sur "." : empêche le modèle de dériver dans une deuxième
+        # phrase après avoir déjà correctement formulé la première (observé
+        # en pratique) — il s'arrête net au premier point plutôt que de se
+        # faire couper à mi-mot par num_predict après avoir déjà ajouté du
+        # bruit interprétatif non demandé.
+        "options": {"temperature": 0.0, "num_predict": 60, "stop": ["."]}
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{ollama_url}/api/generate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+            distilled = data.get("response", "").strip().strip('"')
+            # Garde-fou dur : observé en pratique que mistral formule une
+            # première phrase propre et factuelle, PUIS dérive dans une
+            # deuxième ("... on a Windows system. Consider examining
+            # PowerShell logs...") qui réintroduit exactement le bruit
+            # interprétatif que le prompt lui demande d'éviter — et cette
+            # deuxième phrase se fait souvent couper à mi-mot par
+            # num_predict. On ne garde que la première phrase complète
+            # (jusqu'au premier point), avec un plafond de mots en filet de
+            # sécurité si même la première phrase déborde. Cohérent avec le
+            # principe déjà appliqué ailleurs (porte de confiance au
+            # retrieval) : ne pas faire reposer la fiabilité sur la seule
+            # docilité du LLM.
+            first_sentence = distilled.split(".")[0].strip()
+            distilled = " ".join(first_sentence.split()[:25])
+            # Deuxième garde-fou : même à température 0, deux appels
+            # identiques ont produit des sorties très différentes en
+            # pratique (un paragraphe complet une fois, le seul mot
+            # "PowerShell." une autre) — la génération locale n'est pas
+            # parfaitement reproductible. Une distillation à moins de 4 mots
+            # a de bonnes chances d'avoir perdu l'essentiel des faits de la
+            # question (ex: juste "PowerShell" au lieu de "PowerShell.exe
+            # launched by Winword.exe...") ; dans ce cas, la question
+            # complète est encore un meilleur pari pour l'embedding qu'une
+            # distillation appauvrie.
+            if distilled and len(distilled.split()) >= 4:
+                _distillation_cache[question] = distilled
+                return distilled
+    except Exception:
+        pass
+
+    _distillation_cache[question] = question
+    return question
+
+
 # ── HYDE (Hypothetical Document Embeddings) ────────────────────────────────
 def hyde_query(question: str, ollama_url: str = "http://localhost:11434",
                model: str = "mistral") -> str:

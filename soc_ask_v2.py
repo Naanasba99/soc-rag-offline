@@ -564,10 +564,13 @@ def fetch_by_exact_id(ident: str, theme: str = None, max_files: int = 2,
 # s'y fie pas aveuglément : les candidats trouvés repassent par le même
 # reranker cross-encoder que le chemin normal avant d'être acceptés.
 def lexical_rescue(question: str, where_filter: dict, topk: int, exclude_docs: set,
-                    query_en: str = None):
+                    query_en: str = None, bm25_query: str = None):
     """Tente de retrouver des chunks pertinents par matching lexical sur les
     noms de fichiers quand la recherche vectorielle n'a rien trouvé de fiable.
-    Retourne (docs, metas, dists, scores, confident) — même contrat que rerank()."""
+    Retourne (docs, metas, dists, scores, confident) — même contrat que rerank().
+    bm25_query : requête à utiliser pour le matching BM25 (typiquement la
+    traduction anglaise, `query_en` — les noms de fichiers du corpus sont
+    en anglais). Retombe sur `question` si non fournie."""
     if not (HYBRID_SEARCH_ENABLED and RERANKING_ENABLED):
         return [], [], [], [], False
     try:
@@ -584,7 +587,7 @@ def lexical_rescue(question: str, where_filter: dict, topk: int, exclude_docs: s
         return [], [], [], [], False
 
     filenames = list(by_file.keys())
-    top_idx = bm25_filter(question, filenames, top_n=min(15, len(filenames)))
+    top_idx = bm25_filter(bm25_query or question, filenames, top_n=min(15, len(filenames)))
 
     cand_docs, cand_metas, cand_dists = [], [], []
     for i in top_idx:
@@ -612,11 +615,26 @@ def retrieval(question: str, mode: str, theme: str = None, topk: int = 8,
               source: str = None, no_filter: bool = False):
     from collections import Counter
     embeddings = get_embeddings()
-    # Traduction anglaise de la question pour le reranker cross-lingue (voir
-    # la note dans soc_reranker.rerank : le cross-encoder est English-only
-    # et sous-note fortement le contenu anglais — la majorité du corpus
-    # MITRE/Sigma/CISA/Atomic — quand la question est posée en français).
+    # Traduction anglaise de la question — sert À LA FOIS au reranker
+    # cross-lingue (voir la note dans soc_reranker.rerank : le cross-encoder
+    # est English-only) ET à l'embedding vectoriel lui-même.
+    #
+    # Comparaison A/B mesurée sur un cas réel (question longue et narrative
+    # d'analyste : "powershell.exe lancé par winword.exe, connexion réseau
+    # sortante...") :
+    #   - question FR complète, brute           : dist 0.66  (rien de pertinent)
+    #   - distillation FR/EN par LLM             : dist 0.51-0.59 (instable
+    #     d'un run à l'autre, voir git blame — la tâche "résume en ne
+    #     gardant que les faits" laisse trop de prise à la dérive du modèle)
+    #   - question EN complète, TRADUITE mot pour mot (pas résumée) : dist
+    #     0.471, trouve une vraie règle de détection pertinente
+    # Conclusion : c'est la LANGUE de la requête qui domine, pas sa longueur
+    # — traduire (tâche contrainte, fiable) marche mieux et est bien plus
+    # stable que distiller (tâche ouverte, sujette à dérive). Et comme
+    # query_en est de toute façon déjà calculée pour le reranker, la
+    # réutiliser pour l'embedding n'ajoute aucun appel LLM supplémentaire.
     query_en = translate_query_en(question, model=LLM_MODEL) if RERANKING_ENABLED else None
+    query_for_embedding = query_en if query_en else question
     agent_config = None
     if not theme and not no_filter:
         agent_config = route_query(question)
@@ -627,7 +645,7 @@ def retrieval(question: str, mode: str, theme: str = None, topk: int = 8,
         hyde_text = hyde_query(question, model=LLM_MODEL)
         query_embedding = embeddings.embed_query(hyde_text)
     else:
-        query_embedding = embeddings.embed_query(question)
+        query_embedding = embeddings.embed_query(query_for_embedding)
     where_filter = None
     if theme:
         where_filter = {"theme": {"$eq": theme}}
@@ -800,7 +818,8 @@ def retrieval(question: str, mode: str, theme: str = None, topk: int = 8,
     # concret qui a motivé ce filet).
     if not confident:
         rescue_docs, rescue_metas, rescue_dists, rescue_scores, rescue_confident = lexical_rescue(
-            question, where_filter, topk, exclude_docs=set(raw_docs), query_en=query_en
+            question, where_filter, topk, exclude_docs=set(raw_docs), query_en=query_en,
+            bm25_query=query_for_embedding
         )
         if rescue_confident:
             reranked_docs, reranked_metas, reranked_dists = rescue_docs, rescue_metas, rescue_dists
